@@ -1,6 +1,7 @@
 // 純粋ロジック（DOM・TTS・storageに依存しない）
 export const MAX_TIMERS = 6;
 export const MAX_HISTORY = 20;
+export const MAX_FAVORITES = 30;
 export const MAX_MINUTES = 1440;
 export const SCHEMA_VERSION = 1;
 export const DEFAULT_TEXT = 'タイマーです';
@@ -107,7 +108,7 @@ export function msToNextSecond(now) {
 
 // 保存データの読み出し（壊れていたら null を返す）
 export function parseStore(raw) {
-  if (raw == null) return { timers: [], history: [] };
+  if (raw == null) return { timers: [], history: [], favorites: [] };
   let data;
   try {
     data = JSON.parse(raw);
@@ -121,11 +122,51 @@ export function parseStore(raw) {
     (t) => t && typeof t.id === 'string' && typeof t.text === 'string' && Number.isFinite(t.endAt) && Number.isFinite(t.createdAt)
   );
   const history = data.history.filter((h) => typeof h === 'string');
-  return { timers, history };
+  const favorites = (Array.isArray(data.favorites) ? data.favorites : []).filter(
+    (f) => f && typeof f.id === 'string' && typeof f.text === 'string' && (f.durationMs === null || Number.isFinite(f.durationMs))
+  );
+  return { timers, history, favorites };
 }
 
-export function serializeStore(timers, history) {
-  return JSON.stringify({ version: SCHEMA_VERSION, timers, history });
+export function serializeStore(timers, history, favorites = []) {
+  return JSON.stringify({ version: SCHEMA_VERSION, timers, history, favorites });
+}
+
+// 時間の表示用（例: 30分 / 1時間30分 / 45秒）
+export function formatDuration(ms) {
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}秒`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return sec % 60 ? `${min}分${sec % 60}秒` : `${min}分`;
+  const h = Math.floor(min / 60);
+  return min % 60 ? `${h}時間${min % 60}分` : `${h}時間`;
+}
+
+// お気に入り。durationMs が null なら「セリフだけ」、数値なら「セリフ＋時間」
+export function addFavorite(favorites, { text, durationMs = null, id }) {
+  const t = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!t) return { ok: false, error: 'セリフを入力してください', favorites };
+  if (favorites.some((f) => f.text === t && f.durationMs === durationMs)) {
+    return { ok: false, error: 'すでに登録されています', favorites };
+  }
+  if (favorites.length >= MAX_FAVORITES) {
+    return { ok: false, error: `お気に入りは${MAX_FAVORITES}件までです。不要なものを削除してください`, favorites };
+  }
+  return { ok: true, favorites: [...favorites, { id, text: t, durationMs }] };
+}
+
+export function removeFavorite(favorites, id) {
+  return favorites.filter((f) => f.id !== id);
+}
+
+// dir: -1(上へ) / 1(下へ)
+export function moveFavorite(favorites, id, dir) {
+  const i = favorites.findIndex((f) => f.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= favorites.length) return favorites;
+  const next = favorites.slice();
+  [next[i], next[j]] = [next[j], next[i]];
+  return next;
 }
 
 // 発話の推定時間（onend不発時のウォッチドッグ用）

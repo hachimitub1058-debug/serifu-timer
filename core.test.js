@@ -4,6 +4,7 @@ import {
   remainingMs, isRinging, formatRemaining, formatOverdue, validateDuration, normalizeText,
   createTimer, canAddTimer, addHistory, ringingTimers, runningTimers, pickNext, progress,
   parseStore, serializeStore, estimateSpeechMs, msToNextSecond, MAX_TIMERS, DEFAULT_TEXT,
+  formatDuration, addFavorite, removeFavorite, moveFavorite, MAX_FAVORITES,
 } from './core.js';
 
 const T = (id, endAt, createdAt = 0, durationMs = 1000) => ({ id, text: id, endAt, createdAt, durationMs });
@@ -86,12 +87,16 @@ test('progress は0〜1にクランプ', () => {
 });
 
 test('parseStore: 正常・空・破損', () => {
-  assert.deepEqual(parseStore(null), { timers: [], history: [] });
+  assert.deepEqual(parseStore(null), { timers: [], history: [], favorites: [] });
   assert.equal(parseStore('{broken'), null);
   assert.equal(parseStore(JSON.stringify({ version: 99, timers: [], history: [] })), null);
   const t = T('a', 5000);
   const raw = serializeStore([t, { id: 1 }], ['x', 3]);
-  assert.deepEqual(parseStore(raw), { timers: [t], history: ['x'] });
+  assert.deepEqual(parseStore(raw), { timers: [t], history: ['x'], favorites: [] });
+  const fav = { id: 'f', text: '薬', durationMs: null };
+  assert.deepEqual(parseStore(serializeStore([], [], [fav, { id: 1 }])).favorites, [fav]);
+  // 旧データ（favorites なし）も読める
+  assert.deepEqual(parseStore(JSON.stringify({ version: 1, timers: [], history: [] })).favorites, []);
 });
 
 test('estimateSpeechMs / msToNextSecond', () => {
@@ -99,4 +104,32 @@ test('estimateSpeechMs / msToNextSecond', () => {
   assert.ok(estimateSpeechMs('あ', 0.5) > estimateSpeechMs('あ', 1));
   const w = msToNextSecond(12_345);
   assert.ok(w > 0 && w <= 1005);
+});
+
+test('formatDuration', () => {
+  assert.equal(formatDuration(45_000), '45秒');
+  assert.equal(formatDuration(30 * 60_000), '30分');
+  assert.equal(formatDuration(90_000), '1分30秒');
+  assert.equal(formatDuration(3_600_000), '1時間');
+  assert.equal(formatDuration(5_400_000), '1時間30分');
+});
+
+test('addFavorite: セリフのみ / セリフ+時間 を別物として登録、重複・上限・空を拒否', () => {
+  let r = addFavorite([], { text: ' 薬 を 飲む ', id: '1' });
+  assert.deepEqual(r.favorites, [{ id: '1', text: '薬 を 飲む', durationMs: null }]);
+  r = addFavorite(r.favorites, { text: '薬 を 飲む', durationMs: 60_000, id: '2' });
+  assert.equal(r.ok, true);
+  assert.equal(r.favorites.length, 2);
+  assert.equal(addFavorite(r.favorites, { text: '薬 を 飲む', durationMs: 60_000, id: '3' }).ok, false);
+  assert.equal(addFavorite(r.favorites, { text: '  ', id: '4' }).ok, false);
+  const full = Array.from({ length: MAX_FAVORITES }, (_, i) => ({ id: String(i), text: `t${i}`, durationMs: null }));
+  assert.equal(addFavorite(full, { text: 'new', id: 'n' }).ok, false);
+});
+
+test('removeFavorite / moveFavorite', () => {
+  const f = ['a', 'b', 'c'].map((id) => ({ id, text: id, durationMs: null }));
+  assert.deepEqual(removeFavorite(f, 'b').map((x) => x.id), ['a', 'c']);
+  assert.deepEqual(moveFavorite(f, 'b', -1).map((x) => x.id), ['b', 'a', 'c']);
+  assert.deepEqual(moveFavorite(f, 'c', 1).map((x) => x.id), ['a', 'b', 'c']);
+  assert.deepEqual(moveFavorite(f, 'zzz', 1), f);
 });

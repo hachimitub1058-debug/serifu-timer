@@ -2,6 +2,7 @@ import {
   createTimer, canAddTimer, addHistory, ringingTimers, runningTimers, remainingMs, progress,
   formatRemaining, formatClock, formatOverdue, validateDuration, normalizeText,
   parseStore, serializeStore, msToNextSecond, MAX_TIMERS,
+  addFavorite, removeFavorite, moveFavorite, formatDuration,
 } from './core.js';
 import { createSpeaker } from './speaker.js';
 import { createKeepAwake } from './keepawake.js';
@@ -16,6 +17,7 @@ const $ = (id) => document.getElementById(id);
 // ---------- 状態 ----------
 let timers = [];
 let history = [];
+let favorites = [];
 let speakingId = null;
 let noticeMsg = '';
 
@@ -28,15 +30,16 @@ function loadState() {
   if (parsed === null) {
     safeSet(BACKUP_KEY, raw ?? '');
     setNotice('保存データが壊れていたため、初期化しました。');
-    timers = []; history = [];
+    timers = []; history = []; favorites = [];
     return;
   }
   timers = parsed.timers;
   history = parsed.history;
+  favorites = parsed.favorites;
 }
 
 function saveState() {
-  if (!safeSet(STORE_KEY, serializeStore(timers, history))) {
+  if (!safeSet(STORE_KEY, serializeStore(timers, history, favorites))) {
     setNotice('保存できませんでした（プライベートブラウズ等）。再読込するとタイマーが消えます。');
   }
 }
@@ -232,25 +235,89 @@ document.querySelectorAll('input[name=mins]').forEach((r) => r.addEventListener(
   if (!$('otherBox').hidden) $('otherValue').focus();
 }));
 
+// タイマーを開始する共通処理（フォーム送信・お気に入りの「▶」から使う）
+function startTimer(rawText, durationMs) {
+  const err = $('formError');
+  err.hidden = true;
+  if (!canAddTimer(timers)) { err.textContent = `同時に設定できるのは${MAX_TIMERS}件までです。`; err.hidden = false; return false; }
+  // ユーザー操作の内側で音声と画面保持を準備する（iOSの自動再生制限対策）
+  speaker.unlock();
+  keepAwake.want(true);
+  timers.push(createTimer({ text: normalizeText(rawText), durationMs, now: Date.now(), id: newId() }));
+  history = addHistory(history, rawText);
+  saveState();
+  renderChips();
+  render();
+  return true;
+}
+
 $('addForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const err = $('formError');
   err.hidden = true;
-  if (!canAddTimer(timers)) { err.textContent = `同時に設定できるのは${MAX_TIMERS}件までです。`; err.hidden = false; return; }
   const d = selectedDuration();
   if (!d.ok) { err.textContent = d.error; err.hidden = false; return; }
+  if (startTimer($('text').value, d.ms)) $('text').value = '';
+});
 
-  // ユーザー操作の内側で音声と画面保持を準備する（iOSの自動再生制限対策）
-  speaker.unlock();
-  keepAwake.want(true);
+// ---------- お気に入り ----------
+function renderFavs() {
+  const box = $('favs');
+  box.textContent = '';
+  for (const f of favorites) {
+    const timed = f.durationMs !== null;
+    const b = el('button', timed ? 'chip fav timed' : 'chip fav', timed ? `▶ ${f.text}（${formatDuration(f.durationMs)}）` : `⭐ ${f.text}`);
+    b.type = 'button';
+    b.addEventListener('click', () => {
+      if (timed) startTimer(f.text, f.durationMs); // 時間つきはワンタップで開始
+      else $('text').value = f.text;               // セリフだけは入力欄へ
+    });
+    box.append(b);
+  }
+  const list = $('favList');
+  list.textContent = '';
+  $('favEmpty').hidden = favorites.length > 0;
+  favorites.forEach((f, i) => {
+    const li = el('li');
+    li.append(el('span', 'name', f.durationMs !== null ? `${f.text}（${formatDuration(f.durationMs)}）` : f.text));
+    const up = el('button', '', '↑'); up.type = 'button'; up.disabled = i === 0; up.setAttribute('aria-label', '上へ');
+    const down = el('button', '', '↓'); down.type = 'button'; down.disabled = i === favorites.length - 1; down.setAttribute('aria-label', '下へ');
+    const rm = el('button', 'rm', '削除'); rm.type = 'button';
+    up.addEventListener('click', () => { favorites = moveFavorite(favorites, f.id, -1); saveState(); renderFavs(); });
+    down.addEventListener('click', () => { favorites = moveFavorite(favorites, f.id, 1); saveState(); renderFavs(); });
+    rm.addEventListener('click', () => { favorites = removeFavorite(favorites, f.id); saveState(); renderFavs(); });
+    li.append(up, down, rm);
+    list.append(li);
+  });
+}
 
-  const text = normalizeText($('text').value);
-  timers.push(createTimer({ text, durationMs: d.ms, now: Date.now(), id: newId() }));
-  history = addHistory(history, $('text').value);
+function closeFavPanel() { $('favPanel').hidden = true; $('favError').hidden = true; }
+
+$('favOpen').addEventListener('click', () => {
+  const err = $('favError');
+  err.hidden = true;
+  const d = selectedDuration();
+  $('favTimeLabel').textContent = d.ok ? `（${formatDuration(d.ms)}）` : '（時間を選んでください）';
+  document.querySelector('input[name=favKind][value=text]').checked = true;
+  $('favPanel').hidden = false;
+});
+$('favCancel').addEventListener('click', closeFavPanel);
+
+$('favSave').addEventListener('click', () => {
+  const err = $('favError');
+  const kind = document.querySelector('input[name=favKind]:checked').value;
+  let durationMs = null;
+  if (kind === 'time') {
+    const d = selectedDuration();
+    if (!d.ok) { err.textContent = d.error; err.hidden = false; return; }
+    durationMs = d.ms;
+  }
+  const r = addFavorite(favorites, { text: $('text').value, durationMs, id: newId() });
+  if (!r.ok) { err.textContent = r.error; err.hidden = false; return; }
+  favorites = r.favorites;
   saveState();
-  $('text').value = '';
-  renderChips();
-  render();
+  renderFavs();
+  closeFavPanel();
 });
 
 $('testBtn').addEventListener('click', () => {
@@ -278,7 +345,7 @@ window.addEventListener('pageshow', tick);
 window.addEventListener('storage', (e) => {
   if (e.key !== STORE_KEY) return;
   const p = parseStore(e.newValue);
-  if (p) { timers = p.timers; history = p.history; renderChips(); render(); }
+  if (p) { timers = p.timers; history = p.history; favorites = p.favorites; renderChips(); renderFavs(); render(); }
 });
 
 // ---------- 起動 ----------
@@ -291,4 +358,5 @@ if (!speaker.supported) setNotice('このブラウザは音声読み上げに対
 if (ringingTimers(timers, Date.now()).length > 0) speaker.setNeedsTap(true);
 
 renderChips();
+renderFavs();
 tick();

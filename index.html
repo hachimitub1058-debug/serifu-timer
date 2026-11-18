@@ -40,7 +40,24 @@
       <form id="addForm" autocomplete="off">
         <label for="text" class="sr-only">セリフ</label>
         <input id="text" type="text" maxlength="60" placeholder="例: 薬を飲む（🎤で音声入力もOK）" enterkeyhint="done">
+        <div id="favs" class="chips favs" aria-label="よく使うセリフ"></div>
         <div id="chips" class="chips" aria-label="最近使った言葉"></div>
+        <button type="button" id="favOpen" class="link">⭐ このセリフをお気に入りに登録</button>
+        <div id="favPanel" class="panel" hidden>
+          <fieldset class="favkind">
+            <legend>どう登録しますか？</legend>
+            <label><input type="radio" name="favKind" value="text" checked> <span>セリフだけ</span></label>
+            <label><input type="radio" name="favKind" value="time"> <span>セリフ＋時間 <b id="favTimeLabel"></b></span></label>
+          </fieldset>
+          <p id="favError" class="error" role="alert" hidden></p>
+          <button type="button" id="favSave" class="big-btn primary">登録する</button>
+          <button type="button" id="favCancel" class="link">キャンセル</button>
+        </div>
+        <details id="favManage" class="manage">
+          <summary>よく使うセリフの管理（並び替え・削除）</summary>
+          <p id="favEmpty" class="empty">まだ登録がありません。</p>
+          <ul id="favList" class="favlist"></ul>
+        </details>
 
         <fieldset class="presets">
           <legend>何分後？</legend>
