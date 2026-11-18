@@ -107,6 +107,25 @@ form > .link { display: block; margin: 6px auto 0; }
   border-radius: 12px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; z-index: 10;
 }
 .undo .link { color: #9cc3ff; }
+.warns { border: 0; padding: 0; margin: 12px 0 4px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.warns legend { padding: 0; margin-bottom: 6px; color: var(--muted); font-size: 14px; }
+.warns label { display: block; }
+.warns input { position: absolute; opacity: 0; }
+.warns span {
+  display: flex; align-items: center; justify-content: center; min-height: 48px;
+  border: 2px solid var(--line); border-radius: 10px; background: var(--card); font-size: 15px;
+}
+.warns input:checked + span { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); font-weight: 700; }
+.warns input:disabled + span { opacity: .35; }
+.warns input:focus-visible + span { outline: 3px solid var(--fg); outline-offset: 2px; }
+.hint { color: var(--muted); font-size: 13px; margin: 4px 0; }
+.check { display: flex; align-items: center; gap: 10px; min-height: 48px; font-size: 17px; margin-top: 8px; }
+.check input { width: 24px; height: 24px; flex: none; }
+.field { margin-bottom: 10px; }
+.field label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
+.badge { display: inline-block; font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: var(--info-bg); color: var(--fg); }
+.card.ringing .badge { background: rgba(255,255,255,.25); color: #fff; }
+.card .more { display: block; margin-top: 8px; width: 100%; min-height: 44px; background: none; border: 0; color: #fff; text-decoration: underline; font-size: 14px; }
 .chip.fav { border-color: var(--primary); }
 .chip.fav.timed { background: var(--primary); color: var(--primary-fg); font-weight: 700; }
 .panel { border: 2px solid var(--primary); border-radius: 12px; padding: 12px; margin: 8px 0; background: var(--card); }

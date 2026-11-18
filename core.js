@@ -63,8 +63,109 @@ export function normalizeText(text) {
   return t.length > 0 ? t : DEFAULT_TEXT;
 }
 
-export function createTimer({ text, durationMs, now, id }) {
-  return { id, text: normalizeText(text), createdAt: now, durationMs, endAt: now + durationMs };
+export const WARN_PRESETS_MS = [60_000, 180_000, 300_000, 600_000];
+export const DEFAULT_BREAK_END_TEXT = '休憩おわり。再開しましょう';
+export const BREAK_END_LABEL = '休憩が終わります';
+const LATE_WARN_MS = 30_000; // これ以上遅れた予告は、読み上げず記録だけする
+
+// 予告の候補を整える（重複排除・降順・時間より短いものだけ）
+export function normalizeWarns(warns, limitMs) {
+  return [...new Set((warns || []).filter((w) => Number.isFinite(w) && w > 0 && w < limitMs))].sort((a, b) => b - a);
+}
+
+// warns: 予告（ms前）の配列 / repeat: {breakMs, breakText, total(null=止めるまで)} または null
+export function createTimer({ text, durationMs, now, id, warns = [], repeat = null }) {
+  const timer = {
+    id, text: normalizeText(text), createdAt: now, durationMs, endAt: now + durationMs,
+    warns: normalizeWarns(warns, Math.max(durationMs, repeat?.breakMs || 0)), warned: [],
+  };
+  if (repeat) {
+    timer.repeat = {
+      workMs: durationMs, breakMs: repeat.breakMs || 0, breakText: String(repeat.breakText ?? '').trim(),
+      total: repeat.total ?? null, done: 0, phase: 'work',
+    };
+  }
+  return timer;
+}
+
+// 鳴動時に読み上げる言葉（休憩の終わりは休憩用のセリフ）
+export function phaseText(timer) {
+  return timer.repeat?.phase === 'break' ? (timer.repeat.breakText || DEFAULT_BREAK_END_TEXT) : timer.text;
+}
+
+// 予告で「あと〇分で、◯◯」の◯◯に入る言葉
+export function warnLabel(timer) {
+  return timer.repeat?.phase === 'break' ? BREAK_END_LABEL : timer.text;
+}
+
+export function phaseLabel(timer) {
+  const r = timer.repeat;
+  if (!r) return '';
+  if (r.phase === 'break') return '☕ 休憩中';
+  return r.total ? `🔁 ${r.done + 1}/${r.total}回目` : `🔁 ${r.done + 1}回目`;
+}
+
+// 今読み上げるべき予告を返す。{fire: 読み上げるms or null, mark: 記録するms[]} / なければ null
+export function dueWarning(timer, now) {
+  if (isRinging(timer, now)) return null;
+  const remaining = timer.endAt - now;
+  const warned = timer.warned || [];
+  const due = (timer.warns || []).filter((w) => w < timer.durationMs && !warned.includes(w) && remaining <= w);
+  if (due.length === 0) return null;
+  const onTime = due.filter((w) => w - remaining <= LATE_WARN_MS);
+  return { fire: onTime.length ? Math.min(...onTime) : null, mark: due };
+}
+
+export function markWarned(timer, mark) {
+  return { ...timer, warned: [...(timer.warned || []), ...mark] };
+}
+
+function startPhase(timer, now, ms, repeat) {
+  return { ...timer, createdAt: now, durationMs: ms, endAt: now + ms, warned: [], repeat };
+}
+
+// 鳴動を止めたあと、次の段階へ。繰り返しがない/最後の回なら null（タイマー終了）
+export function advanceTimer(timer, now) {
+  const r = timer.repeat;
+  if (!r) return null;
+  if (r.phase === 'work') {
+    const done = r.done + 1;
+    if (r.total !== null && done >= r.total) return null;
+    if (r.breakMs > 0) return startPhase(timer, now, r.breakMs, { ...r, done, phase: 'break' });
+    return startPhase(timer, now, r.workMs, { ...r, done, phase: 'work' });
+  }
+  return startPhase(timer, now, r.workMs, { ...r, phase: 'work' });
+}
+
+export function stopTimer(timers, id, now) {
+  return timers.flatMap((t) => {
+    if (t.id !== id || !isRinging(t, now)) return [t];
+    const n = advanceTimer(t, now);
+    return n ? [n] : [];
+  });
+}
+
+export function stopAllRinging(timers, now) {
+  return timers.flatMap((t) => {
+    if (!isRinging(t, now)) return [t];
+    const n = advanceTimer(t, now);
+    return n ? [n] : [];
+  });
+}
+
+// 設定の説明（お気に入り表示用）
+export function describeOpts(opts) {
+  if (!opts) return '';
+  const parts = [];
+  if (opts.warns?.length) {
+    parts.push(`予告 ${[...opts.warns].sort((a, b) => b - a).map((w) => `${formatDuration(w)}前`).join('・')}`);
+  }
+  if (opts.repeat) {
+    const r = opts.repeat;
+    const brk = r.breakMs > 0 ? `休憩${formatDuration(r.breakMs)}` : '休憩なし';
+    parts.push(`繰り返し(${brk}・${r.total ? `${r.total}回` : '止めるまで'})`);
+  }
+  return parts.join(' / ');
 }
 
 export function canAddTimer(timers) {
@@ -143,16 +244,18 @@ export function formatDuration(ms) {
 }
 
 // お気に入り。durationMs が null なら「セリフだけ」、数値なら「セリフ＋時間」
-export function addFavorite(favorites, { text, durationMs = null, id }) {
+export function addFavorite(favorites, { text, durationMs = null, opts = null, id }) {
   const t = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (!t) return { ok: false, error: 'セリフを入力してください', favorites };
-  if (favorites.some((f) => f.text === t && f.durationMs === durationMs)) {
+  const o = durationMs === null ? null : opts;
+  const key = JSON.stringify(o ?? null);
+  if (favorites.some((f) => f.text === t && f.durationMs === durationMs && JSON.stringify(f.opts ?? null) === key)) {
     return { ok: false, error: 'すでに登録されています', favorites };
   }
   if (favorites.length >= MAX_FAVORITES) {
     return { ok: false, error: `お気に入りは${MAX_FAVORITES}件までです。不要なものを削除してください`, favorites };
   }
-  return { ok: true, favorites: [...favorites, { id, text: t, durationMs }] };
+  return { ok: true, favorites: [...favorites, { id, text: t, durationMs, ...(o ? { opts: o } : {}) }] };
 }
 
 export function removeFavorite(favorites, id) {

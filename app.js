@@ -3,6 +3,7 @@ import {
   formatRemaining, formatClock, formatOverdue, validateDuration, normalizeText,
   parseStore, serializeStore, msToNextSecond, MAX_TIMERS,
   addFavorite, removeFavorite, moveFavorite, formatDuration,
+  stopTimer, stopAllRinging, phaseText, warnLabel, phaseLabel, dueWarning, markWarned, describeOpts, normalizeWarns,
 } from './core.js';
 import { createSpeaker } from './speaker.js';
 import { createKeepAwake } from './keepawake.js';
@@ -49,7 +50,9 @@ const getRate = () => { const r = parseFloat(safeGet(RATE_KEY)); return Number.i
 
 // ---------- Speaker / KeepAwake ----------
 const speaker = createSpeaker({
-  getRinging: () => (document.visibilityState === 'visible' ? ringingTimers(timers, Date.now()) : []),
+  getRinging: () => (document.visibilityState === 'visible'
+    ? ringingTimers(timers, Date.now()).map((t) => ({ id: t.id, text: phaseText(t) }))
+    : []),
   onSpeaking: (id) => { speakingId = id; markSpeaking(); },
   onBlocked: (b) => { $('speechBlocked').hidden = !b && !speaker.needsTap; },
   getRate,
@@ -98,27 +101,38 @@ function buildRunning(t) {
   del.type = 'button';
   del.addEventListener('click', () => removeTimer(t.id, true));
   row1.append(say, del);
+  const badge = el('span', 'badge');
   const row2 = el('div', 'row');
   const time = el('span', 'time');
-  const at = el('span', 'at', `${formatClock(t.endAt)} に鳴ります`);
+  const at = el('span', 'at');
   row2.append(time, at);
   const bar = el('div', 'bar');
   const fill = document.createElement('i');
   bar.append(fill);
-  li.append(row1, row2, bar);
-  return { li, time, fill };
+  li.append(row1, badge, row2, bar);
+  return { li, time, at, fill, badge };
 }
 
 function buildRinging(t) {
   const li = el('li', 'card ringing');
-  const tag = el('div', 'tag', '🔔 時間です');
-  const say = el('div', 'say', t.text);
+  const isBreak = t.repeat?.phase === 'break';
+  const idle = isBreak ? '☕ 休憩おわり' : '🔔 時間です';
+  const tag = el('div', 'tag', idle);
+  const say = el('div', 'say', phaseText(t));
+  const badge = el('span', 'badge', isBreak ? '' : phaseLabel(t));
+  badge.hidden = isBreak || !t.repeat;
   const at = el('div', 'at');
-  const stop = el('button', 'stop-btn', '止める');
+  const stop = el('button', 'stop-btn', t.repeat ? (isBreak ? '止める（次の作業へ）' : '止める（休憩/次へ）') : '止める');
   stop.type = 'button';
-  stop.addEventListener('click', () => removeTimer(t.id, false));
-  li.append(tag, say, at, stop);
-  return { li, at, tag };
+  stop.addEventListener('click', () => stopOne(t.id));
+  li.append(tag, say, badge, at, stop);
+  if (t.repeat) {
+    const quit = el('button', 'more', '🔁 繰り返しをやめる');
+    quit.type = 'button';
+    quit.addEventListener('click', () => removeTimer(t.id, false));
+    li.append(quit);
+  }
+  return { li, at, tag, idle };
 }
 
 function syncKeyed(map, ul, items, build) {
@@ -135,12 +149,27 @@ function markSpeaking() {
   for (const [id, v] of ringEls) {
     const on = id === speakingId;
     v.li.classList.toggle('speaking', on);
-    v.tag.textContent = on ? '🔊 読み上げ中' : '🔔 時間です';
+    v.tag.textContent = on ? '🔊 読み上げ中' : v.idle;
   }
+}
+
+// 予告（あとN分で…）。読み上げは一度だけ。画面が見えている間だけ行う
+function checkWarnings(now) {
+  if (document.visibilityState !== 'visible') return;
+  let changed = false;
+  timers = timers.map((t) => {
+    const d = dueWarning(t, now);
+    if (!d) return t;
+    changed = true;
+    if (d.fire !== null) speaker.announce(`あと${formatDuration(d.fire)}で、${warnLabel(t)}`);
+    return markWarned(t, d.mark);
+  });
+  if (changed) saveState();
 }
 
 function render() {
   const now = Date.now();
+  checkWarnings(now);
   const running = runningTimers(timers, now);
   const ringing = ringingTimers(timers, now);
 
@@ -153,6 +182,9 @@ function render() {
     v.time.textContent = formatRemaining(rem);
     v.time.classList.toggle('soon', rem < 60_000);
     v.fill.style.width = `${Math.round(progress(t, now) * 100)}%`;
+    v.badge.hidden = !t.repeat;
+    v.badge.textContent = phaseLabel(t);
+    v.at.textContent = `${formatClock(t.endAt)} に${t.repeat?.phase === 'break' ? '休憩おわり' : '鳴ります'}`;
   }
   for (const t of ringing) {
     const v = ringEls.get(t.id);
@@ -214,9 +246,16 @@ $('undoBtn').addEventListener('click', () => {
   render();
 });
 
+// 鳴動中の1件を止める。繰り返しなら休憩/次の作業へ進み、それ以外は終了
+function stopOne(id) {
+  timers = stopTimer(timers, id, Date.now());
+  saveState();
+  hideUndo();
+  render();
+}
+
 $('stopAll').addEventListener('click', () => {
-  const now = Date.now();
-  timers = timers.filter((t) => !(t.endAt <= now));
+  timers = stopAllRinging(timers, Date.now());
   saveState();
   speaker.stop();
   render();
@@ -235,15 +274,47 @@ document.querySelectorAll('input[name=mins]').forEach((r) => r.addEventListener(
   if (!$('otherBox').hidden) $('otherValue').focus();
 }));
 
+// フォームの予告・繰り返しの設定を読む。どちらも未設定なら null
+function buildOpts(durationMs) {
+  const checked = [...document.querySelectorAll('input[name=warn]:checked:not(:disabled)')].map((i) => Number(i.value));
+  let repeat = null;
+  if ($('repeatOn').checked) {
+    repeat = {
+      breakMs: Number($('breakMin').value) * 60_000,
+      breakText: $('breakText').value.trim(),
+      total: Number($('repeatTimes').value) || null,
+    };
+  }
+  const warns = normalizeWarns(checked, Math.max(durationMs, repeat?.breakMs || 0));
+  return warns.length || repeat ? { warns, repeat } : null;
+}
+
+// 作業時間より長い予告は選べないようにする
+function updateWarnAvailability() {
+  const d = selectedDuration();
+  let blocked = [];
+  document.querySelectorAll('input[name=warn]').forEach((i) => {
+    const off = d.ok && Number(i.value) >= d.ms;
+    i.disabled = off;
+    if (off) { i.checked = false; blocked.push(formatDuration(Number(i.value))); }
+  });
+  const hint = $('warnHint');
+  hint.hidden = blocked.length === 0;
+  hint.textContent = blocked.length ? `時間が短いため、${blocked.reverse().join('・')}前の予告は選べません` : '';
+}
+
 // タイマーを開始する共通処理（フォーム送信・お気に入りの「▶」から使う）
-function startTimer(rawText, durationMs) {
+function startTimer(rawText, durationMs, opts = null) {
   const err = $('formError');
   err.hidden = true;
   if (!canAddTimer(timers)) { err.textContent = `同時に設定できるのは${MAX_TIMERS}件までです。`; err.hidden = false; return false; }
   // ユーザー操作の内側で音声と画面保持を準備する（iOSの自動再生制限対策）
   speaker.unlock();
   keepAwake.want(true);
-  timers.push(createTimer({ text: normalizeText(rawText), durationMs, now: Date.now(), id: newId() }));
+  timers.push(createTimer({
+    text: normalizeText(rawText), durationMs, now: Date.now(), id: newId(),
+    warns: opts?.warns ?? [], repeat: opts?.repeat ?? null,
+  }));
   history = addHistory(history, rawText);
   saveState();
   renderChips();
@@ -257,8 +328,14 @@ $('addForm').addEventListener('submit', (e) => {
   err.hidden = true;
   const d = selectedDuration();
   if (!d.ok) { err.textContent = d.error; err.hidden = false; return; }
-  if (startTimer($('text').value, d.ms)) $('text').value = '';
+  if (startTimer($('text').value, d.ms, buildOpts(d.ms))) $('text').value = '';
 });
+
+$('repeatOn').addEventListener('change', () => { $('repeatBox').hidden = !$('repeatOn').checked; });
+$('breakMin').addEventListener('change', () => { $('breakTextRow').hidden = $('breakMin').value === '0'; });
+document.querySelectorAll('input[name=mins]').forEach((r) => r.addEventListener('change', updateWarnAvailability));
+$('otherValue').addEventListener('input', updateWarnAvailability);
+$('otherUnit').addEventListener('change', updateWarnAvailability);
 
 // ---------- お気に入り ----------
 function renderFavs() {
@@ -266,10 +343,11 @@ function renderFavs() {
   box.textContent = '';
   for (const f of favorites) {
     const timed = f.durationMs !== null;
-    const b = el('button', timed ? 'chip fav timed' : 'chip fav', timed ? `▶ ${f.text}（${formatDuration(f.durationMs)}）` : `⭐ ${f.text}`);
+    const marks = `${f.opts?.repeat ? '🔁' : ''}${f.opts?.warns?.length ? '🔔' : ''}`;
+    const b = el('button', timed ? 'chip fav timed' : 'chip fav', timed ? `▶ ${f.text}（${formatDuration(f.durationMs)}）${marks}` : `⭐ ${f.text}`);
     b.type = 'button';
     b.addEventListener('click', () => {
-      if (timed) startTimer(f.text, f.durationMs); // 時間つきはワンタップで開始
+      if (timed) startTimer(f.text, f.durationMs, f.opts ?? null); // 時間つきはワンタップで開始
       else $('text').value = f.text;               // セリフだけは入力欄へ
     });
     box.append(b);
@@ -279,7 +357,10 @@ function renderFavs() {
   $('favEmpty').hidden = favorites.length > 0;
   favorites.forEach((f, i) => {
     const li = el('li');
-    li.append(el('span', 'name', f.durationMs !== null ? `${f.text}（${formatDuration(f.durationMs)}）` : f.text));
+    const name = el('span', 'name', f.durationMs !== null ? `${f.text}（${formatDuration(f.durationMs)}）` : f.text);
+    const detail = describeOpts(f.opts);
+    if (detail) name.append(el('small', 'hint', ` ${detail}`));
+    li.append(name);
     const up = el('button', '', '↑'); up.type = 'button'; up.disabled = i === 0; up.setAttribute('aria-label', '上へ');
     const down = el('button', '', '↓'); down.type = 'button'; down.disabled = i === favorites.length - 1; down.setAttribute('aria-label', '下へ');
     const rm = el('button', 'rm', '削除'); rm.type = 'button';
@@ -297,7 +378,8 @@ $('favOpen').addEventListener('click', () => {
   const err = $('favError');
   err.hidden = true;
   const d = selectedDuration();
-  $('favTimeLabel').textContent = d.ok ? `（${formatDuration(d.ms)}）` : '（時間を選んでください）';
+  const detail = d.ok ? describeOpts(buildOpts(d.ms)) : '';
+  $('favTimeLabel').textContent = d.ok ? `（${formatDuration(d.ms)}${detail ? `・${detail}` : ''}）` : '（時間を選んでください）';
   document.querySelector('input[name=favKind][value=text]').checked = true;
   $('favPanel').hidden = false;
 });
@@ -307,12 +389,14 @@ $('favSave').addEventListener('click', () => {
   const err = $('favError');
   const kind = document.querySelector('input[name=favKind]:checked').value;
   let durationMs = null;
+  let opts = null;
   if (kind === 'time') {
     const d = selectedDuration();
     if (!d.ok) { err.textContent = d.error; err.hidden = false; return; }
     durationMs = d.ms;
+    opts = buildOpts(d.ms); // 予告・繰り返しの設定もいっしょに登録
   }
-  const r = addFavorite(favorites, { text: $('text').value, durationMs, id: newId() });
+  const r = addFavorite(favorites, { text: $('text').value, durationMs, opts, id: newId() });
   if (!r.ok) { err.textContent = r.error; err.hidden = false; return; }
   favorites = r.favorites;
   saveState();
@@ -359,4 +443,5 @@ if (ringingTimers(timers, Date.now()).length > 0) speaker.setNeedsTap(true);
 
 renderChips();
 renderFavs();
+updateWarnAvailability();
 tick();

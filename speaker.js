@@ -15,6 +15,8 @@ export function createSpeaker({ synth = globalThis.speechSynthesis, Utter = glob
   let currentId = null;
   let voice = null;
   let needsTap = false; // 再読込・復帰直後など、ユーザー操作を待つ状態
+  let queue = [];       // 予告など「1回だけ読む」言葉
+  let announcing = false;
 
   const supported = !!(synth && Utter);
 
@@ -63,6 +65,16 @@ export function createSpeaker({ synth = globalThis.speechSynthesis, Utter = glob
 
   async function loop(myGen) {
     while (running && myGen === gen) {
+      // 予告は、鳴動中の繰り返しより先に（1回だけ）読む
+      if (queue.length) {
+        const text = queue.shift();
+        announcing = true;
+        await speakOnce(text, myGen);
+        announcing = false;
+        if (myGen !== gen) return;
+        await wait(300);
+        continue;
+      }
       const ringing = getRinging();
       const t = pickNext(ringing, lastId);
       if (!t) break;
@@ -90,6 +102,8 @@ export function createSpeaker({ synth = globalThis.speechSynthesis, Utter = glob
     running = false;
     currentId = null;
     lastId = null;
+    queue = [];
+    announcing = false;
     onSpeaking(null);
     onBlocked(false);
     try { synth?.cancel(); } catch { /* noop */ }
@@ -120,7 +134,10 @@ export function createSpeaker({ synth = globalThis.speechSynthesis, Utter = glob
     // 鳴動中の状態に合わせてループを開始/停止
     sync() {
       const ringing = getRinging();
-      if (ringing.length === 0) { if (running) stop(); return; }
+      if (ringing.length === 0 && queue.length === 0) {
+        if (running && !announcing) stop(); // 予告の読み上げ中は止めない
+        return;
+      }
       if (needsTap || !supported) return;
       if (!running) { start(); return; }
       // 現在読み上げ中のタイマーが止められたら、即座に中断して次へ
@@ -129,6 +146,12 @@ export function createSpeaker({ synth = globalThis.speechSynthesis, Utter = glob
         try { synth.cancel(); } catch { /* noop */ }
         start();
       }
+    },
+    // 予告など、1回だけ読み上げる（鳴動中なら、その合間に先に読む）
+    announce(text) {
+      if (!supported || needsTap) return;
+      queue.push(text);
+      this.sync();
     },
     // テスト再生（ユーザー操作内）
     test(text) {

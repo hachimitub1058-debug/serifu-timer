@@ -76,6 +76,51 @@
             <option value="hour">時間</option>
           </select>
         </div>
+
+        <fieldset class="warns">
+          <legend>🔔 予告（何分前に知らせる？ 複数OK）</legend>
+          <label><input type="checkbox" name="warn" value="600000"><span>10分前</span></label>
+          <label><input type="checkbox" name="warn" value="300000"><span>5分前</span></label>
+          <label><input type="checkbox" name="warn" value="180000"><span>3分前</span></label>
+          <label><input type="checkbox" name="warn" value="60000"><span>1分前</span></label>
+        </fieldset>
+        <p id="warnHint" class="hint" hidden></p>
+
+        <label class="check"><input type="checkbox" id="repeatOn"><span>🔁 繰り返す（休憩もはさめます）</span></label>
+        <div id="repeatBox" class="panel" hidden>
+          <div class="field">
+            <label for="breakMin">☕ 休憩</label>
+            <select id="breakMin">
+              <option value="0">なし</option>
+              <option value="1">1分</option>
+              <option value="3">3分</option>
+              <option value="5" selected>5分</option>
+              <option value="10">10分</option>
+              <option value="15">15分</option>
+              <option value="20">20分</option>
+              <option value="30">30分</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="repeatTimes">🔢 回数</label>
+            <select id="repeatTimes">
+              <option value="0">止めるまで続ける</option>
+              <option value="2">2回</option>
+              <option value="3">3回</option>
+              <option value="4" selected>4回</option>
+              <option value="5">5回</option>
+              <option value="6">6回</option>
+              <option value="8">8回</option>
+              <option value="10">10回</option>
+            </select>
+          </div>
+          <div class="field" id="breakTextRow">
+            <label for="breakText">休憩が終わったときのセリフ</label>
+            <input id="breakText" type="text" maxlength="60" placeholder="空欄なら「休憩おわり。再開しましょう」">
+          </div>
+          <p class="hint">作業が終わるたびに鳴ります。「止める」を押すと休憩が始まり、休憩が終わると再び鳴ります。</p>
+        </div>
+
         <p id="formError" class="error" role="alert" hidden></p>
 
         <button type="submit" id="startBtn" class="big-btn primary">スタート</button>

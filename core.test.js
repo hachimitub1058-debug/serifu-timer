@@ -5,6 +5,7 @@ import {
   createTimer, canAddTimer, addHistory, ringingTimers, runningTimers, pickNext, progress,
   parseStore, serializeStore, estimateSpeechMs, msToNextSecond, MAX_TIMERS, DEFAULT_TEXT,
   formatDuration, addFavorite, removeFavorite, moveFavorite, MAX_FAVORITES,
+  normalizeWarns, phaseText, warnLabel, phaseLabel, dueWarning, markWarned, advanceTimer, stopTimer, stopAllRinging, describeOpts, DEFAULT_BREAK_END_TEXT, BREAK_END_LABEL,
 } from './core.js';
 
 const T = (id, endAt, createdAt = 0, durationMs = 1000) => ({ id, text: id, endAt, createdAt, durationMs });
@@ -51,7 +52,7 @@ test('normalizeText は空なら既定文', () => {
 
 test('createTimer / canAddTimer', () => {
   const t = createTimer({ text: '洗濯', durationMs: 60_000, now: 1000, id: 'x' });
-  assert.deepEqual(t, { id: 'x', text: '洗濯', createdAt: 1000, durationMs: 60_000, endAt: 61_000 });
+  assert.deepEqual(t, { id: 'x', text: '洗濯', createdAt: 1000, durationMs: 60_000, endAt: 61_000, warns: [], warned: [] });
   assert.equal(canAddTimer(Array(MAX_TIMERS - 1).fill(t)), true);
   assert.equal(canAddTimer(Array(MAX_TIMERS).fill(t)), false);
 });
@@ -132,4 +133,108 @@ test('removeFavorite / moveFavorite', () => {
   assert.deepEqual(moveFavorite(f, 'b', -1).map((x) => x.id), ['b', 'a', 'c']);
   assert.deepEqual(moveFavorite(f, 'c', 1).map((x) => x.id), ['a', 'b', 'c']);
   assert.deepEqual(moveFavorite(f, 'zzz', 1), f);
+});
+
+const M = 60_000;
+const rep = (o = {}) => createTimer({ text: '水', durationMs: 25 * M, now: 0, id: 'r',
+  repeat: { breakMs: 5 * M, breakText: '', total: 2, ...o } });
+
+test('normalizeWarns: 時間未満のみ・重複排除・降順', () => {
+  assert.deepEqual(normalizeWarns([M, 5 * M, 5 * M, 10 * M, -1, NaN], 10 * M), [5 * M, M]);
+  assert.deepEqual(normalizeWarns(undefined, M), []);
+});
+
+test('createTimer: 予告と繰り返しの設定', () => {
+  const t = createTimer({ text: '薬', durationMs: 3 * M, now: 0, id: 'a', warns: [M, 5 * M], repeat: { breakMs: 10 * M, total: null } });
+  assert.deepEqual(t.warns, [5 * M, M]); // 休憩(10分)より短い5分は有効
+  assert.deepEqual(t.repeat, { workMs: 3 * M, breakMs: 10 * M, breakText: '', total: null, done: 0, phase: 'work' });
+});
+
+test('phaseText / warnLabel / phaseLabel', () => {
+  const t = rep();
+  assert.equal(phaseText(t), '水');
+  assert.equal(phaseLabel(t), '🔁 1/2回目');
+  const b = advanceTimer(t, 100);
+  assert.equal(phaseText(b), DEFAULT_BREAK_END_TEXT);
+  assert.equal(warnLabel(b), BREAK_END_LABEL);
+  assert.equal(phaseLabel(b), '☕ 休憩中');
+  assert.equal(phaseText({ ...b, repeat: { ...b.repeat, breakText: '再開！' } }), '再開！');
+  assert.equal(phaseLabel(rep({ total: null })), '🔁 1回目');
+});
+
+test('advanceTimer: 作業→休憩→作業→終了（回数指定）', () => {
+  const t = rep({ total: 2 });
+  const b = advanceTimer(t, 1000);
+  assert.equal(b.repeat.phase, 'break');
+  assert.equal(b.repeat.done, 1);
+  assert.equal(b.durationMs, 5 * M);
+  assert.equal(b.endAt, 1000 + 5 * M);
+  assert.deepEqual(b.warned, []);
+  const w = advanceTimer(b, 2000);
+  assert.equal(w.repeat.phase, 'work');
+  assert.equal(w.durationMs, 25 * M);
+  assert.equal(w.repeat.done, 1);
+  assert.equal(advanceTimer(w, 3000), null); // 2回目の作業が終わったら終了（最後の休憩なし）
+});
+
+test('advanceTimer: 休憩なし・無限・繰り返しなし', () => {
+  const nb = rep({ breakMs: 0, total: null });
+  const n1 = advanceTimer(nb, 0);
+  assert.equal(n1.repeat.phase, 'work');
+  assert.equal(n1.repeat.done, 1);
+  assert.equal(advanceTimer(advanceTimer(n1, 0), 0).repeat.done, 3);
+  assert.equal(advanceTimer(createTimer({ text: 'a', durationMs: M, now: 0, id: 'x' }), 0), null);
+});
+
+test('stopTimer / stopAllRinging は鳴動中のものだけ進める', () => {
+  const a = createTimer({ text: 'a', durationMs: M, now: 0, id: 'a' });
+  const b = createTimer({ text: 'b', durationMs: M, now: 0, id: 'b', repeat: { breakMs: 0, total: null } });
+  const c = createTimer({ text: 'c', durationMs: 10 * M, now: 0, id: 'c' });
+  const now = 2 * M;
+  assert.deepEqual(stopTimer([a, b, c], 'a', now).map((t) => t.id), ['b', 'c']);
+  assert.deepEqual(stopTimer([a, b, c], 'c', now).map((t) => t.id), ['a', 'b', 'c']); // 未発火は変わらない
+  const all = stopAllRinging([a, b, c], now);
+  assert.deepEqual(all.map((t) => t.id), ['b', 'c']);
+  assert.equal(all[0].repeat.done, 1);
+  assert.equal(all[0].endAt, now + M);
+});
+
+test('dueWarning: 一度だけ・遅れたものは読まず記録のみ', () => {
+  const t = createTimer({ text: '薬', durationMs: 10 * M, now: 0, id: 'a', warns: [5 * M, M] });
+  assert.equal(dueWarning(t, 4 * M), null);                      // まだ5分前でない
+  let d = dueWarning(t, 5 * M + 1000);                           // 残り4:59
+  assert.deepEqual(d, { fire: 5 * M, mark: [5 * M] });
+  const t2 = markWarned(t, d.mark);
+  assert.equal(dueWarning(t2, 5 * M + 2000), null);              // 二重に鳴らない
+  d = dueWarning(t2, 9 * M + 30_000);                            // 残り30秒: 1分前が due
+  assert.deepEqual(d, { fire: M, mark: [M] });
+  // 画面を離れていて大幅に遅れた場合は、読まずに記録だけ
+  d = dueWarning(t, 9 * M + 50_000);
+  assert.equal(d.fire, null);
+  assert.deepEqual(d.mark.sort((a, b) => a - b), [M, 5 * M]);
+  assert.equal(dueWarning(t, 10 * M), null);                     // 鳴動中は対象外
+});
+
+test('dueWarning: 休憩の段階では休憩の長さを基準にする', () => {
+  const t = createTimer({ text: '作業', durationMs: 25 * M, now: 0, id: 'a', warns: [5 * M, M], repeat: { breakMs: 3 * M, total: null } });
+  const b = advanceTimer(t, 0); // 休憩3分: 5分前は無効、1分前のみ有効
+  assert.equal(dueWarning(b, 1000), null);
+  assert.deepEqual(dueWarning(b, 2 * M + 10_000), { fire: M, mark: [M] });
+});
+
+test('describeOpts', () => {
+  assert.equal(describeOpts(null), '');
+  assert.equal(describeOpts({ warns: [M, 5 * M], repeat: { breakMs: 5 * M, total: 4 } }), '予告 5分前・1分前 / 繰り返し(休憩5分・4回)');
+  assert.equal(describeOpts({ warns: [], repeat: { breakMs: 0, total: null } }), '繰り返し(休憩なし・止めるまで)');
+});
+
+test('addFavorite: 設定(opts)つきは別物として登録、時間なしでは opts を持たない', () => {
+  const opts = { warns: [M], repeat: null };
+  let r = addFavorite([], { text: '水', durationMs: 60 * M, id: '1' });
+  r = addFavorite(r.favorites, { text: '水', durationMs: 60 * M, opts, id: '2' });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.favorites[1], { id: '2', text: '水', durationMs: 60 * M, opts });
+  assert.equal(addFavorite(r.favorites, { text: '水', durationMs: 60 * M, opts, id: '3' }).ok, false);
+  const textOnly = addFavorite([], { text: '水', opts, id: '4' });
+  assert.deepEqual(textOnly.favorites[0], { id: '4', text: '水', durationMs: null });
 });
