@@ -36,6 +36,10 @@ test('validateDuration', () => {
     assert.equal(validateDuration(bad).ok, false, String(bad));
   }
   assert.equal(validateDuration(3601, 'sec').ok, false);
+  assert.deepEqual(validateDuration(2, 'hour'), { ok: true, ms: 7_200_000 });
+  assert.equal(validateDuration(24, 'hour').ok, true);
+  assert.equal(validateDuration(25, 'hour').ok, false);
+  assert.equal(validateDuration(0, 'hour').ok, false);
 });
 
 test('normalizeText は空なら既定文', () => {

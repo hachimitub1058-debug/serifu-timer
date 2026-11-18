@@ -49,6 +49,10 @@ export function validateDuration(value, unit = 'min') {
     if (n < 1 || n > 3600) return { ok: false, error: '秒は1〜3600で入力してください' };
     return { ok: true, ms: n * 1000 };
   }
+  if (unit === 'hour') {
+    if (n < 1 || n > MAX_MINUTES / 60) return { ok: false, error: `時間は1〜${MAX_MINUTES / 60}で入力してください` };
+    return { ok: true, ms: n * 60 * 60 * 1000 };
+  }
   if (n < 1 || n > MAX_MINUTES) return { ok: false, error: `分は1〜${MAX_MINUTES}で入力してください` };
   return { ok: true, ms: n * 60 * 1000 };
 }
