@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>セリフタイマー</title>
+  <meta name="theme-color" content="#1f3a5f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="セリフタイマー">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>セリフタイマー</h1>
+    <div id="keepAwake" class="banner" role="status"></div>
+    <div id="a2hs" class="banner info" hidden>
+      <span>Safariの共有ボタン →「ホーム画面に追加」で使いやすくなります</span>
+      <button id="a2hsClose" class="link" aria-label="案内を閉じる">閉じる</button>
+    </div>
+    <div id="notice" class="banner warn" role="alert" hidden></div>
+  </header>
+
+  <main>
+    <!-- 鳴動中ゾーン -->
+    <section id="ringingZone" aria-live="assertive" hidden>
+      <div id="speechBlocked" class="speech-blocked" hidden>
+        <button id="resumeSpeech" class="big-btn warn">🔇 音が出ていません。タップして読み上げ開始</button>
+      </div>
+      <ul id="ringingList" class="cards"></ul>
+      <button id="stopAll" class="big-btn stop-all" hidden>すべて止める</button>
+    </section>
+
+    <!-- 入力ゾーン -->
+    <section id="inputZone" aria-labelledby="addTitle">
+      <h2 id="addTitle">なにを忘れたくない？</h2>
+      <form id="addForm" autocomplete="off">
+        <label for="text" class="sr-only">セリフ</label>
+        <input id="text" type="text" maxlength="60" placeholder="例: 薬を飲む（🎤で音声入力もOK）" enterkeyhint="done">
+        <div id="chips" class="chips" aria-label="最近使った言葉"></div>
+
+        <fieldset class="presets">
+          <legend>何分後？</legend>
+          <label><input type="radio" name="mins" value="5" checked><span>5分</span></label>
+          <label><input type="radio" name="mins" value="10"><span>10分</span></label>
+          <label><input type="radio" name="mins" value="30"><span>30分</span></label>
+          <label><input type="radio" name="mins" value="15"><span>15分</span></label>
+          <label><input type="radio" name="mins" value="60"><span>60分</span></label>
+          <label><input type="radio" name="mins" value="other"><span>その他</span></label>
+        </fieldset>
+        <div id="otherBox" class="other" hidden>
+          <input id="otherValue" type="number" inputmode="numeric" min="1" placeholder="数字">
+          <select id="otherUnit" aria-label="単位">
+            <option value="min">分</option>
+            <option value="sec">秒</option>
+          </select>
+        </div>
+        <p id="formError" class="error" role="alert" hidden></p>
+
+        <button type="submit" id="startBtn" class="big-btn primary">スタート</button>
+        <button type="button" id="testBtn" class="link">🔊 テスト再生（音が出るか確認）</button>
+      </form>
+    </section>
+
+    <!-- 実行中ゾーン -->
+    <section id="runningZone" aria-labelledby="runTitle">
+      <h2 id="runTitle">実行中</h2>
+      <p id="empty" class="empty">まだタイマーはありません。上で入力してスタートしましょう。</p>
+      <ul id="runningList" class="cards"></ul>
+      <p id="limitMsg" class="error" hidden></p>
+    </section>
+  </main>
+
+  <div id="undoBar" class="undo" hidden>
+    <span id="undoText"></span>
+    <button id="undoBtn" class="link">元に戻す</button>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
